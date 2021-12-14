@@ -146,6 +146,8 @@ $UninstallScript | Out-File -FilePath "$destPath\Uninstall.ps1"
 Copy-Item -Path $txtFileName.Text -Destination $destPath
 
 #Download the Microsoft Win32 Content Prep Tool
+Install-Module -Name "IntuneWin32App"
+Install-Module -Name "AzureAD"
 Import-Module -Name IntuneWin32App -Force
 Import-Module -Name AzureAD -Force
 
