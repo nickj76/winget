@@ -1,5 +1,5 @@
 <#
-Modules required
+Modules required.
 IntuneWin32App -  Install-Module -Name "IntuneWin32App"
 AzureAD - Install-Module -Name "AzureAD"
 Credit to https://www.petervanderwoude.nl and https://call4cloud.nl/ whose scripts I tweaked for the app upload
