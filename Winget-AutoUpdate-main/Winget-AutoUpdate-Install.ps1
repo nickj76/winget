@@ -14,7 +14,10 @@ Install Winget-AutoUpdate and prerequisites silently
 Specify Winget-AutoUpdate installation localtion. Default: C:\ProgramData\Winget-AutoUpdate\
 
 .PARAMETER DoNotUpdate
-Do not run Winget-autoupdate after installation. By default, Winget-AutoUpdate is run just after installation.
+Do not run Winget-AutoUpdate after installation. By default, Winget-AutoUpdate is run just after installation.
+
+.PARAMETER DisableWAUAutoUpdate
+Disable Winget-AutoUpdate update checking. By default, WAU auto update if new version is available on Github.
 
 .EXAMPLE
 .\winget-install-and-update.ps1 -Silent -DoNotUpdate
@@ -24,7 +27,8 @@ Do not run Winget-autoupdate after installation. By default, Winget-AutoUpdate i
 param(
     [Parameter(Mandatory=$False)] [Alias('S')] [Switch] $Silent = $false,
     [Parameter(Mandatory=$False)] [Alias('Path')] [String] $WingetUpdatePath = "$env:ProgramData\Winget-AutoUpdate",
-    [Parameter(Mandatory=$False)] [Switch] $DoNotUpdate = $false
+    [Parameter(Mandatory=$False)] [Switch] $DoNotUpdate = $false,
+    [Parameter(Mandatory=$False)] [Switch] $DisableWAUAutoUpdate = $false
 )
 
 
@@ -33,7 +37,7 @@ param(
 function Check-Prerequisites{
     #Check if Visual C++ 2019 installed
     $app = "Microsoft Visual C++*2019*"
-    $path = Get-ChildItem -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall, HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall | Get-ItemProperty | Where-Object {$_.DisplayName -like $app } | Select-Object -Property Displayname, DisplayVersion
+    $path = Get-Item HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*, HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* | Where-Object { $_.GetValue("DisplayName") -like $app}
     
     #If not installed, ask for installation
     if (!($path)){
@@ -61,7 +65,7 @@ function Check-Prerequisites{
                 $ProgressPreference = 'SilentlyContinue'
                 Invoke-WebRequest $SourceURL -OutFile $Installer
                 Write-host "Installing VC_redist.$OSArch.exe..."
-                Start-Process -FilePath $Installer -Args "-q" -Wait
+                Start-Process -FilePath $Installer -Args "/quiet /norestart" -Wait
                 Remove-Item $Installer -ErrorAction Ignore
                 Write-host "MS Visual C++ 2015-2019 installed successfully" -ForegroundColor Green
             }
@@ -100,7 +104,7 @@ function Install-WingetAutoUpdate{
         # Settings for the scheduled task for Updates
         $taskAction = New-ScheduledTaskAction –Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$($WingetUpdatePath)\winget-upgrade.ps1`""
         $taskTrigger1 = New-ScheduledTaskTrigger -AtLogOn
-        $taskTrigger2 = New-ScheduledTaskTrigger  -Weekly -WeeksInterval 2 -DaysOfWeek Wednesday -At 6am
+        $taskTrigger2 = New-ScheduledTaskTrigger  -Daily -At 6AM
         $taskUserPrincipal = New-ScheduledTaskPrincipal -UserId S-1-5-18 -RunLevel Highest
         $taskSettings = New-ScheduledTaskSettingsSet -Compatibility Win8 -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 03:00:00
 
@@ -116,6 +120,15 @@ function Install-WingetAutoUpdate{
         # Set up the task, and register it
         $task = New-ScheduledTask -Action $taskAction -Principal $taskUserPrincipal -Settings $taskSettings
         Register-ScheduledTask -TaskName 'Winget-AutoUpdate-Notify' -InputObject $task -Force
+
+        # Install config file
+        [xml]$ConfigXML = @"
+<?xml version="1.0"?>
+<app>
+    <WAUautoupdate>$(!($DisableWAUAutoUpdate))</WAUautoupdate>
+</app>
+"@
+        $ConfigXML.Save("$WingetUpdatePath\config\config.xml")
 
         Write-host "`nInstallation succeeded!" -ForegroundColor Green
         Start-sleep 1

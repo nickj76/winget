@@ -4,19 +4,29 @@ function Init {
     #Var
     $Script:WorkingDir = $PSScriptRoot
 
-    #Logs initialisation
-    $LogPath = "$WorkingDir\logs"
-    if (!(Test-Path $LogPath)){
-        New-Item -ItemType Directory -Force -Path $LogPath
-    }
-
-    #Log file
-    $Script:LogFile = "$LogPath\updates.log"
-
     #Log Header
     $Log = "##################################################`n#     CHECK FOR APP UPDATES - $(Get-Date -Format 'dd/MM/yyyy')`n##################################################"
     $Log | Write-host
-    $Log | out-file -filepath $LogFile -Append
+    try{
+        #Logs initialisation
+	[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $LogPath = "$WorkingDir\logs"
+        if (!(Test-Path $LogPath)){
+            New-Item -ItemType Directory -Force -Path $LogPath
+        }
+        #Log file
+        $Script:LogFile = "$LogPath\updates.log"
+        $Log | out-file -filepath $LogFile -Append
+    }
+    catch{
+        #Logs initialisation
+        $LogPath = "$env:USERPROFILE\Winget-AutoUpdate\logs"
+        if (!(Test-Path $LogPath)){
+            New-Item -ItemType Directory -Force -Path $LogPath
+        }
+        $Script:LogFile = "$LogPath\updates.log"
+        $Log | out-file -filepath $LogFile -Append
+    }
 
     #Get locale file for Notification
     #Default en-US
@@ -42,12 +52,12 @@ function Write-Log ($LogMsg,$LogColor = "White") {
     #Echo log
     $Log | Write-host -ForegroundColor $LogColor
     #Write log to file
-    $Log | out-file -filepath $LogFile -Append
+    $Log | Out-File -filepath $LogFile -Append
 }
 
-function Start-NotifTask ($Title,$Message,$MessageType,$Balise) {    
+function Start-NotifTask ($Title,$Message,$MessageType,$Balise) {
 
-    #Add XML variables
+#Add XML variables
 [xml]$ToastTemplate = @"
 <toast launch="ms-get-started://redirect?id=apps_action">
     <visual>
@@ -61,22 +71,37 @@ function Start-NotifTask ($Title,$Message,$MessageType,$Balise) {
 </toast>
 "@
 
-    #Save XML File
-    $ToastTemplateLocation = "$env:ProgramData\Winget-AutoUpdate\"
-    if (!(Test-Path $ToastTemplateLocation)){
-        New-Item -ItemType Directory -Force -Path $ToastTemplateLocation
-    }
-    $ToastTemplate.Save("$ToastTemplateLocation\notif.xml")
+    #Check if running account is system or interactive logon
+    $currentPrincipal = [bool](([System.Security.Principal.WindowsIdentity]::GetCurrent()).groups -match "S-1-5-4")
+    #if not "Interactive" user, run as system
+    if ($currentPrincipal -eq $false){
+        #Save XML to File
+        $ToastTemplateLocation = "$env:ProgramData\Winget-AutoUpdate\"
+        if (!(Test-Path $ToastTemplateLocation)){
+            New-Item -ItemType Directory -Force -Path $ToastTemplateLocation
+        }
+        $ToastTemplate.Save("$ToastTemplateLocation\notif.xml")
 
-    #Send Notification to user. First, check if script is run as admin (or system)
-    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if ($currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
         #Run Notify scheduled task to notify conneted users
         Get-ScheduledTask -TaskName "Winget-AutoUpdate-Notify" -ErrorAction SilentlyContinue | Start-ScheduledTask -ErrorAction SilentlyContinue
     }
-    #else, run as user
+    #else, run as connected user
     else{
-        Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$WorkingDir\winget-notify.ps1`"" -NoNewWindow -Wait
+        #Load Assemblies
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+
+        #Prepare XML
+        $ToastXml = [Windows.Data.Xml.Dom.XmlDocument]::New()
+        $ToastXml.LoadXml($ToastTemplate.OuterXml)
+
+        #Specify Launcher App ID
+        $LauncherID = "Windows.SystemToast.Winget.Notification"
+        
+        #Prepare and Create Toast
+        $ToastMessage = [Windows.UI.Notifications.ToastNotification]::New($ToastXml)
+        $ToastMessage.Tag = $ToastTemplate.toast.tag
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($LauncherID).Show($ToastMessage)
     }
 
     #Wait for notification to display
@@ -94,8 +119,7 @@ function Test-Network {
         try{
             Invoke-RestMethod -Uri "https://api.github.com/zen"
             Write-Log "Connected !" "Green"
-            $ping = $true
-            return $ping
+            return $true
         }
         catch{
             Start-Sleep 10
@@ -190,10 +214,8 @@ function Get-WingetOutdated {
             $software.Id = $line.Substring($idStart, $versionStart - $idStart).TrimEnd()
             $software.Version = $line.Substring($versionStart, $availableStart - $versionStart).TrimEnd()
             $software.AvailableVersion = $line.Substring($availableStart, $sourceStart - $availableStart).TrimEnd()
-            #check if Avalaible Version is > than Current Version (block "unknow" versions loop)
-            if ([version]$software.AvailableVersion -gt [version]$software.Version){
-                $upgradeList += $software
-            }
+            #add formated soft to list
+            $upgradeList += $software
         }
     }
 
@@ -206,6 +228,104 @@ function Get-ExcludedApps{
     }
 }
 
+function Start-WAUUpdateCheck{
+    #Get AutoUpdate status
+    [xml]$UpdateStatus = Get-Content "$WorkingDir\config\config.xml" -Encoding UTF8 -ErrorAction SilentlyContinue
+    $AutoUpdateStatus = $UpdateStatus.app.WAUautoupdate
+    
+    #Get current installed version
+    [xml]$About = Get-Content "$WorkingDir\config\about.xml" -Encoding UTF8 -ErrorAction SilentlyContinue
+    [version]$Script:CurrentVersion = $About.app.version
+    
+    #Check if AutoUpdate is enabled
+    if ($AutoUpdateStatus -eq $false){
+        Write-Log "WAU Current version: $CurrentVersion. AutoUpdate is disabled." "Cyan"
+        return $false
+    }
+    #If enabled, check online available version
+    else{
+        #Get Github latest version
+        $WAUurl = 'https://api.github.com/repos/Romanitho/Winget-AutoUpdate/releases/latest'
+        $LatestVersion = (Invoke-WebRequest $WAUurl | ConvertFrom-Json)[0].tag_name
+        [version]$AvailableVersion = $LatestVersion.Replace("v","")
+
+        #If newer version is avalable, return $True
+        if ($AvailableVersion -gt $CurrentVersion){
+            Write-Log "WAU Current version: $CurrentVersion. Version $AvailableVersion is available." "Yellow"
+            return $true
+        }
+        else{
+            Write-Log "WAU Current version: $CurrentVersion. Up to date." "Green"
+            return $false
+        }
+    }
+}
+
+function Update-WAU{
+    #Get WAU Github latest version
+    $WAUurl = 'https://api.github.com/repos/Romanitho/Winget-AutoUpdate/releases/latest'
+    $LatestVersion = (Invoke-WebRequest $WAUurl | ConvertFrom-Json)[0].tag_name
+
+    #Send available update notification
+    $Title = $NotifLocale.local.outputs.output[2].title -f "Winget-AutoUpdate"
+    $Message = $NotifLocale.local.outputs.output[2].message -f $CurrentVersion, $LatestVersion.Replace("v","")
+    $MessageType = "info"
+    $Balise = "Winget-AutoUpdate"
+    Start-NotifTask $Title $Message $MessageType $Balise
+
+    #Run WAU update
+    try{
+        #Force to create a zip file 
+        $ZipFile = "$WorkingDir\WAU_update.zip"
+        New-Item $ZipFile -ItemType File -Force | Out-Null
+
+        #Download the zip 
+        Write-Log "Starting downloading the GitHub Repository"
+        Invoke-RestMethod -Uri "https://api.github.com/repos/Romanitho/Winget-AutoUpdate/zipball/$($LatestVersion)" -OutFile $ZipFile
+        Write-Log 'Download finished'
+
+        #Extract Zip File
+        Write-Log "Starting unzipping the WAU GitHub Repository"
+        $location = "$WorkingDir\WAU_update"
+        Expand-Archive -Path $ZipFile -DestinationPath $location -Force
+        Get-ChildItem -Path $location -Recurse | Unblock-File
+        Write-Log "Unzip finished"
+        $TempPath = (Resolve-Path "$location\Romanitho-Winget-AutoUpdate*\Winget-AutoUpdate\").Path
+        Copy-Item -Path "$TempPath\*" -Destination "$WorkingDir\" -Recurse -Force
+        
+        #Remove update zip file
+        Write-Log "Cleaning temp files"
+        Remove-Item -Path $ZipFile -Force -ErrorAction SilentlyContinue
+        #Remove update folder
+        Remove-Item -Path $location -Recurse -Force -ErrorAction SilentlyContinue
+
+        #Set new version to conf.xml
+        [xml]$XMLconf = Get-content "$WorkingDir\config\about.xml" -Encoding UTF8 -ErrorAction SilentlyContinue
+        $XMLconf.app.version = $LatestVersion.Replace("v","")
+        $XMLconf.Save("$WorkingDir\config\about.xml")
+
+        #Send success Notif
+        $Title = $NotifLocale.local.outputs.output[3].title -f "Winget-AutoUpdate"
+        $Message = $NotifLocale.local.outputs.output[3].message -f $LatestVersion
+        $MessageType = "success"
+        $Balise = "Winget-AutoUpdate"
+        Start-NotifTask $Title $Message $MessageType $Balise
+
+        #Rerun with newer version
+	Write-Log "Re-run WAU"
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -Command `"$WorkingDir\winget-upgrade`""
+        exit
+    }
+    catch{
+        #Send Error Notif
+        $Title = $NotifLocale.local.outputs.output[4].title -f "Winget-AutoUpdate"
+        $Message = $NotifLocale.local.outputs.output[4].message
+        $MessageType = "error"
+        $Balise = "Winget-AutoUpdate"
+        Start-NotifTask $Title $Message $MessageType $Balise
+        Write-Log "WAU Update failed"
+    }
+}
 
 <# MAIN #>
 
@@ -214,6 +334,12 @@ Init
 
 #Check network connectivity
 if (Test-Network){
+    #Check if WAU is up to date
+    $CheckWAUupdate = Start-WAUUpdateCheck
+    #If AutoUpdate is enabled and Update is avalaible, then run WAU update
+    if ($CheckWAUupdate){
+        Update-WAU
+    }
 
     #Get exclude apps list
     $toSkip = Get-ExcludedApps
@@ -236,7 +362,7 @@ if (Test-Network){
     #For each app, notify and update
     foreach ($app in $outdated){
 
-        if (-not ($toSkip -contains $app.Id)){
+        if (-not ($toSkip -contains $app.Id) -and $($app.Version) -ne "Unknown"){
 
             #Send available update notification
             Write-Log "Updating $($app.Name) from $($app.Version) to $($app.AvailableVersion)..." "Cyan"
@@ -247,18 +373,27 @@ if (Test-Network){
             Start-NotifTask $Title $Message $MessageType $Balise
 
             #Winget upgrade
-            Write-Log "------ Winget - $($app.Name) Upgrade Starts ------" "Gray"
-            & $upgradecmd upgrade --id $($app.Id) --all --accept-package-agreements --accept-source-agreements -h
-            Write-Log "----- Winget - $($app.Name) Upgrade Finished -----" "Gray"   
-
-            #Check installed version
-            $checkoutdated = Get-WingetOutdated
-            $FailedToUpgrade = $false
-            foreach ($checkapp in $checkoutdated){
-                if ($($checkapp.Id) -eq $($app.Id)) {
-                    $FailedToUpgrade = $true
-                }      
-            }
+            Write-Log "##########   WINGET UPGRADE PROCESS STARTS FOR APPLICATION ID '$($App.Id)'   ##########" "Gray"
+                #Run Winget Upgrade command
+                & $UpgradeCmd upgrade --id $($app.Id) --all --accept-package-agreements --accept-source-agreements -h | Tee-Object -file $LogFile -Append
+                
+                #Check if application updated properly
+                $CheckOutdated = Get-WingetOutdated
+                $FailedToUpgrade = $false
+                foreach ($CheckApp in $CheckOutdated){
+                    if ($($CheckApp.Id) -eq $($app.Id)) {
+                        #If app failed to upgrade, run Install command
+                        & $upgradecmd install --id $($app.Id) --accept-package-agreements --accept-source-agreements -h | Tee-Object -file $LogFile -Append
+                        #Check if application installed properly
+                        $CheckOutdated2 = Get-WingetOutdated
+                        foreach ($CheckApp2 in $CheckOutdated2){
+                            if ($($CheckApp2.Id) -eq $($app.Id)) {
+                                $FailedToUpgrade = $true
+                            }      
+                        }
+                    }
+                }
+            Write-Log "##########   WINGET UPGRADE PROCESS FINISHED FOR APPLICATION ID '$($App.Id)'   ##########" "Gray"   
 
             #Notify installation
             if ($FailedToUpgrade -eq $false){   
@@ -285,7 +420,12 @@ if (Test-Network){
                 $Balise = $($app.Name)
                 Start-NotifTask $Title $Message $MessageType $Balise
             }
-		        }
+		}
+        #if current app version is unknown
+        elseif($($app.Version) -eq "Unknown"){
+            Write-Log "$($app.Name) : Skipped upgrade because current version is 'Unknown'" "Gray"
+        }
+        #if app is in "excluded list"
         else{
             Write-Log "$($app.Name) : Skipped upgrade because it is in the excluded app list" "Gray"
         }
@@ -301,4 +441,4 @@ if (Test-Network){
 
 #End
 Write-Log "End of process!" "Cyan"
-Sleep 3
+Start-Sleep 3
