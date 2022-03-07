@@ -5,7 +5,6 @@ Configure Winget to daily update installed apps.
 .DESCRIPTION
 Install powershell scripts and scheduled task to daily run Winget upgrade and notify connected users.
 Possible to exclude apps from auto-update
-https://github.com/Romanitho/Winget-AutoUpdate
 
 .PARAMETER Silent
 Install Winget-AutoUpdate and prerequisites silently
