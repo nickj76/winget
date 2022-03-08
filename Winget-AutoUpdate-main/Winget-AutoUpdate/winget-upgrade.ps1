@@ -9,7 +9,7 @@ function Init {
     $Log | Write-host
     try{
         #Logs initialisation
-	[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $LogPath = "$WorkingDir\logs"
         if (!(Test-Path $LogPath)){
             New-Item -ItemType Directory -Force -Path $LogPath
@@ -29,19 +29,19 @@ function Init {
     }
 
     #Get locale file for Notification
-    #Default en-US
-    $DefaultLocale = "$WorkingDir\locale\en-US.xml"
+    #Default english
+    $DefaultLocale = "$WorkingDir\locale\en.xml"
     #Get OS locale
-    $Locale = Get-WinSystemLocale
+    $Locale = (Get-Culture).Parent
     #Test if OS locale config file exists
     $LocaleFile = "$WorkingDir\locale\$($locale.Name).xml"
     if(Test-Path $LocaleFile){
         [xml]$Script:NotifLocale = Get-Content $LocaleFile -Encoding UTF8 -ErrorAction SilentlyContinue
-        $LocaleNotif = "Notification Langugage : $($locale.Name)"
+        $LocaleNotif = "Notification Langugage : $($locale.DisplayName)"
     }
     else{
         [xml]$Script:NotifLocale = Get-Content $DefaultLocale -Encoding UTF8 -ErrorAction SilentlyContinue
-        $LocaleNotif = "Notification Langugage : en-US"
+        $LocaleNotif = "Notification Langugage : English"
     }
     Write-Log $LocaleNotif "Cyan"
 }
@@ -57,8 +57,8 @@ function Write-Log ($LogMsg,$LogColor = "White") {
 
 function Start-NotifTask ($Title,$Message,$MessageType,$Balise) {
 
-#Add XML variables
-[xml]$ToastTemplate = @"
+    #Add XML variables
+    [xml]$ToastTemplate = @"
 <toast launch="ms-get-started://redirect?id=apps_action">
     <visual>
         <binding template="ToastImageAndText03">
@@ -246,7 +246,7 @@ function Start-WAUUpdateCheck{
     else{
         #Get Github latest version
         $WAUurl = 'https://api.github.com/repos/Romanitho/Winget-AutoUpdate/releases/latest'
-        $LatestVersion = (Invoke-WebRequest $WAUurl | ConvertFrom-Json)[0].tag_name
+        $LatestVersion = (Invoke-WebRequest $WAUurl -UseBasicParsing | ConvertFrom-Json)[0].tag_name
         [version]$AvailableVersion = $LatestVersion.Replace("v","")
 
         #If newer version is avalable, return $True
@@ -264,7 +264,7 @@ function Start-WAUUpdateCheck{
 function Update-WAU{
     #Get WAU Github latest version
     $WAUurl = 'https://api.github.com/repos/Romanitho/Winget-AutoUpdate/releases/latest'
-    $LatestVersion = (Invoke-WebRequest $WAUurl | ConvertFrom-Json)[0].tag_name
+    $LatestVersion = (Invoke-WebRequest $WAUurl -UseBasicParsing | ConvertFrom-Json)[0].tag_name
 
     #Send available update notification
     $Title = $NotifLocale.local.outputs.output[2].title -f "Winget-AutoUpdate"
@@ -312,7 +312,7 @@ function Update-WAU{
         Start-NotifTask $Title $Message $MessageType $Balise
 
         #Rerun with newer version
-	Write-Log "Re-run WAU"
+	    Write-Log "Re-run WAU"
         Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -Command `"$WorkingDir\winget-upgrade`""
         exit
     }
